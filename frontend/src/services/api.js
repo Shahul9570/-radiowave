@@ -1,8 +1,9 @@
-const BASE_URL = 'https://radiowave-trm3.onrender.com';
+const envUrl = process.env.REACT_APP_API_URL || '';
+export const BASE_URL = envUrl;
 
 export const WS_URL = BASE_URL
-  .replace(/^https/, 'wss')
-  .replace(/^http/, 'ws');
+  ? BASE_URL.replace(/^https/, 'wss').replace(/^http/, 'ws')
+  : (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host;
 
 function getToken() { return localStorage.getItem('rw_token'); }
 

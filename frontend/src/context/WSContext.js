@@ -103,6 +103,7 @@ export function WSProvider({ children }) {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return;
       setConnected(false);
       setIncomingTransmission(null);
       reconnectRef.current = setTimeout(() => { if (user) connect(); }, 4000);
@@ -115,7 +116,10 @@ export function WSProvider({ children }) {
     if (user) connect();
     return () => {
       clearTimeout(reconnectRef.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [user]); // eslint-disable-line
 
