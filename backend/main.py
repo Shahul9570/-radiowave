@@ -1,8 +1,9 @@
-import os, json, logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
-from fastapi.middleware.cors import CORSMiddleware
+import os
+import json
+import logging
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
+from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from database import engine, SessionLocal
 import models
@@ -13,27 +14,47 @@ from routers.users_router import router as users_router
 from routers.friends_router import router as friends_router
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="RadioWave API", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-    "http://localhost:3001",
-    "https://radiowave.pages.dev",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
+# ── Manual CORS middleware ──────────────────────────────────────────
+# We do this manually because FastAPI's CORSMiddleware conflicts with
+# allow_credentials=True + wildcard origins in some proxy setups.
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    # Get the requesting origin
+    origin = request.headers.get("origin", "*")
+
+    # Handle preflight OPTIONS request immediately
+    if request.method == "OPTIONS":
+        response = Response(status_code=200)
+        response.headers["Access-Control-Allow-Origin"]  = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, X-Requested-With"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Max-Age"] = "86400"
+        return response
+
+    # Process normal request
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"]      = origin
+    response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"]     = "Authorization, Content-Type, Accept, X-Requested-With"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+
+# ── Routers ────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(friends_router)
 
 
+# ── Helpers ────────────────────────────────────────────────────────
 def _friend_ids(db, uid):
     rows = db.query(models.Friend).filter(
         (models.Friend.user_id == uid) | (models.Friend.friend_id == uid),
@@ -50,6 +71,7 @@ def _are_friends(db, a, b):
     ).first() is not None
 
 
+# ── WebSocket ──────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
     db = SessionLocal()
@@ -67,10 +89,12 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
         try:
             while True:
                 msg = await ws.receive()
-                if "text" in msg and msg["text"]:
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                if "text" in msg and msg.get("text"):
                     try:
                         data = json.loads(msg["text"])
-                    except:
+                    except Exception:
                         continue
                     t = data.get("type")
                     if t == "start_transmission":
@@ -83,7 +107,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                         await manager.stop_transmission(user.id)
                     elif t == "ping":
                         await manager.send_json(user.id, {"type": "pong"})
-                elif "bytes" in msg and msg["bytes"]:
+                elif "bytes" in msg and msg.get("bytes"):
                     await manager.forward_audio(user.id, msg["bytes"])
         except WebSocketDisconnect:
             pass
@@ -96,15 +120,20 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
         db.close()
 
 
+# ── Health check ───────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok", "online_users": manager.online_count()}
 
 
-# Serve React frontend (after npm run build)
+# ── Serve React frontend (only if build folder exists) ────────────
 frontend_build = os.path.join(os.path.dirname(__file__), "..", "frontend", "build")
 if os.path.exists(frontend_build):
-    app.mount("/static", StaticFiles(directory=os.path.join(frontend_build, "static")), name="static")
+    app.mount(
+        "/static",
+        StaticFiles(directory=os.path.join(frontend_build, "static")),
+        name="static",
+    )
 
     @app.get("/")
     def serve_root():
