@@ -21,9 +21,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "http://localhost:3001",
-        "https://radiowave.pages.dev",
-        "https://radiowave-trm3.onrender.com",
+    "http://localhost:3001",
+    "https://radiowave.pages.dev",
     ],
     allow_credentials=True,
     allow_methods=["*"],
