@@ -20,8 +20,10 @@ app = FastAPI(title="RadioWave API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://radiowave.pages.dev",
         "http://localhost:3000",
+        "http://localhost:3001",
+        "https://radiowave.pages.dev",
+        "https://radiowave-trm3.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
