@@ -21,40 +21,50 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="RadioWave API", version="1.0.0")
 
 
-# ── Manual CORS middleware ──────────────────────────────────────────
-# We do this manually because FastAPI's CORSMiddleware conflicts with
-# allow_credentials=True + wildcard origins in some proxy setups.
+# ── CORS Middleware ─────────────────────────────────────────────────
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
-    # Get the requesting origin
-    origin = request.headers.get("origin", "*")
+    origin = request.headers.get("origin")
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://radiowave.pages.dev",
+        "https://taptalk.pages.dev",
+        "https://radiowave-trm3.onrender.com",
+    ]
 
-    # Handle preflight OPTIONS request immediately
+    # Use the request origin if it's in our allowed list, else use first allowed
+    cors_origin = origin if origin in allowed_origins else "http://localhost:3000"
+
+    # Handle preflight OPTIONS request
     if request.method == "OPTIONS":
-        response = Response(status_code=200)
-        response.headers["Access-Control-Allow-Origin"]  = origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, X-Requested-With"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Max-Age"] = "86400"
-        return response
+        headers = {
+            "Access-Control-Allow-Origin":      cors_origin,
+            "Access-Control-Allow-Methods":     "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers":     "Authorization, Content-Type, Accept, X-Requested-With",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age":           "86400",
+            "Vary":                             "Origin",
+        }
+        return Response(content="OK", status_code=200, headers=headers)
 
     # Process normal request
     response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"]      = origin
+    response.headers["Access-Control-Allow-Origin"]      = cors_origin
     response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
     response.headers["Access-Control-Allow-Headers"]     = "Authorization, Content-Type, Accept, X-Requested-With"
     response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Vary"]                             = "Origin"
     return response
 
 
-# ── Routers ────────────────────────────────────────────────────────
+# ── Routers ─────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(friends_router)
 
 
-# ── Helpers ────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────
 def _friend_ids(db, uid):
     rows = db.query(models.Friend).filter(
         (models.Friend.user_id == uid) | (models.Friend.friend_id == uid),
@@ -71,7 +81,7 @@ def _are_friends(db, a, b):
     ).first() is not None
 
 
-# ── WebSocket ──────────────────────────────────────────────────────
+# ── WebSocket ────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
     db = SessionLocal()
@@ -81,11 +91,13 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
         if not user:
             await ws.close(code=4001)
             return
+
         await manager.connect(ws, user.id)
         fids = _friend_ids(db, user.id)
         online = [f for f in fids if manager.is_online(f)]
         await manager.send_json(user.id, {"type": "online_friends", "online_ids": online})
         await manager.broadcast_status(user.id, True, fids)
+
         try:
             while True:
                 msg = await ws.receive()
@@ -102,7 +114,10 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                         if isinstance(tid, int) and _are_friends(db, user.id, tid):
                             await manager.start_transmission(user.id, tid)
                         else:
-                            await manager.send_json(user.id, {"type": "error", "message": "Not friends with that user"})
+                            await manager.send_json(user.id, {
+                                "type": "error",
+                                "message": "Not friends with that user"
+                            })
                     elif t == "stop_transmission":
                         await manager.stop_transmission(user.id)
                     elif t == "ping":
@@ -111,6 +126,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                     await manager.forward_audio(user.id, msg["bytes"])
         except WebSocketDisconnect:
             pass
+
     finally:
         if user:
             await manager.stop_transmission(user.id)
@@ -120,13 +136,13 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
         db.close()
 
 
-# ── Health check ───────────────────────────────────────────────────
+# ── Health Check ─────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok", "online_users": manager.online_count()}
 
 
-# ── Serve React frontend (only if build folder exists) ────────────
+# ── Serve React Frontend ─────────────────────────────────────────────
 frontend_build = os.path.join(os.path.dirname(__file__), "..", "frontend", "build")
 if os.path.exists(frontend_build):
     app.mount(
